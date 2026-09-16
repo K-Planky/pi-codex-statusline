@@ -1,0 +1,50 @@
+{
+  "name": "pi-codex-statusline",
+  "version": "0.1.0",
+  "description": "A minimal Pi footer with ChatGPT Codex usage limits",
+  "author": "Chachris Martin Kurz (https://github.com/K-Planky)",
+  "type": "module",
+  "main": "./index.js",
+  "exports": "./index.js",
+  "files": [
+    "index.js",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node --check index.js && node --check src/auth.js && node --check src/constants.js && node --check src/extension.js && node --check src/footer.js && node --check src/format.js && node --check src/usage.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "codex",
+    "chatgpt",
+    "statusline",
+    "footer"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-tui": "0.74.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/K-Planky/pi-codex-statusline.git"
+  },
+  "homepage": "https://github.com/K-Planky/pi-codex-statusline#readme",
+  "bugs": {
+    "url": "https://github.com/K-Planky/pi-codex-statusline/issues"
+  },
+  "pi": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

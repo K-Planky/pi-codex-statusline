@@ -1,6 +1,6 @@
 const baseUrl =
-    process.env.PI_CODEX_STATUSLINE_BASE_URL ||
-    "https://chatgpt.com/backend-api";
+  process.env.PI_CODEX_STATUSLINE_BASE_URL ||
+  "https://chatgpt.com/backend-api";
 
 export const USAGE_URL = `${baseUrl.replace(/\/+$/, "")}/wham/usage`;
 

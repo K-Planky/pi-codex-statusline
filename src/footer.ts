@@ -1,6 +1,12 @@
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ReadonlyFooterDataProvider,
+  Theme,
+} from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-import { isCodexProvider } from "./auth.js";
+import { isCodexProvider } from "./auth.ts";
 import {
   CONTEXT_CRITICAL_PERCENT,
   CONTEXT_WARN_PERCENT,
@@ -10,22 +16,33 @@ import {
   MAX_WEEK_RESET_SECONDS,
   QUOTA_CRITICAL_PERCENT,
   QUOTA_WARN_PERCENT,
-} from "./constants.js";
+} from "./constants.ts";
 import {
   effectiveUsedPercent,
   formatModelName,
   formatWindowCountdown,
   sanitizeSingleLine,
-} from "./format.js";
+} from "./format.ts";
+import type { QuotaLabel, StatuslineState, UsageSnapshot, UsageWindow } from "./types.ts";
+
+interface Layout {
+  readonly statuses: boolean;
+  readonly countdowns: boolean;
+  readonly thinking: boolean;
+  readonly model: boolean;
+  readonly modelWidth?: number;
+  readonly fiveHour?: boolean;
+  readonly weekly?: boolean;
+}
 
 const noop = () => {};
 
 const COUNTDOWN_WINDOWS = [
   ["fiveHour", MAX_FIVE_HOUR_RESET_SECONDS * 1000],
   ["weekly", MAX_WEEK_RESET_SECONDS * 1000],
-];
+] as const;
 
-const LAYOUTS = [
+const LAYOUTS: readonly Layout[] = [
   {
     statuses: true,
     countdowns: true,
@@ -84,11 +101,16 @@ const LAYOUTS = [
   },
 ];
 
-function ambient(theme, text) {
+function ambient(theme: Theme, text: string): string {
   return theme.fg("muted", text);
 }
 
-function renderModel(pi, ctx, layout, theme) {
+function renderModel(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  layout: Layout,
+  theme: Theme,
+): string | undefined {
   if (!layout.model || !ctx.model?.id) return undefined;
 
   let text = formatModelName(ctx.model.id, layout.modelWidth);
@@ -104,7 +126,7 @@ function renderModel(pi, ctx, layout, theme) {
   return ambient(theme, text);
 }
 
-function renderContext(ctx, theme) {
+function renderContext(ctx: ExtensionContext, theme: Theme): string {
   const context = ctx.getContextUsage();
   if (
     context?.percent === null ||
@@ -122,7 +144,13 @@ function renderContext(ctx, theme) {
   return ambient(theme, text);
 }
 
-function renderQuota(label, window, countdowns, theme, nowMs) {
+function renderQuota(
+  label: QuotaLabel,
+  window: UsageWindow | undefined,
+  countdowns: boolean,
+  theme: Theme,
+  nowMs: number,
+): string | undefined {
   const percent = effectiveUsedPercent(window, nowMs);
   if (percent === undefined) return undefined;
 
@@ -142,7 +170,11 @@ function renderQuota(label, window, countdowns, theme, nowMs) {
   }`;
 }
 
-function getNextCountdownRedrawAt(ctx, snapshot, nowMs) {
+function getNextCountdownRedrawAt(
+  ctx: ExtensionContext,
+  snapshot: UsageSnapshot | undefined,
+  nowMs: number,
+): number | undefined {
   if (!isCodexProvider(ctx.model?.provider) || !snapshot) return undefined;
 
   let nextRedrawAt = Number.POSITIVE_INFINITY;
@@ -164,7 +196,7 @@ function getNextCountdownRedrawAt(ctx, snapshot, nowMs) {
   return Number.isFinite(nextRedrawAt) ? nextRedrawAt : undefined;
 }
 
-function renderStatuses(footerData) {
+function renderStatuses(footerData: ReadonlyFooterDataProvider): string {
   return Array.from(footerData.getExtensionStatuses().entries())
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([, text]) => sanitizeSingleLine(text))
@@ -172,7 +204,16 @@ function renderStatuses(footerData) {
     .join(" ");
 }
 
-function buildLine(pi, ctx, state, footerData, theme, layout, nowMs, contextText) {
+function buildLine(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: StatuslineState,
+  footerData: ReadonlyFooterDataProvider,
+  theme: Theme,
+  layout: Layout,
+  nowMs: number,
+  contextText: string,
+): string {
   const segments = [];
   const model = renderModel(pi, ctx, layout, theme);
   if (model) segments.push(model);
@@ -211,14 +252,14 @@ function buildLine(pi, ctx, state, footerData, theme, layout, nowMs, contextText
 }
 
 export function renderStatusLine(
-  pi,
-  ctx,
-  state,
-  footerData,
-  theme,
-  width,
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: StatuslineState,
+  footerData: ReadonlyFooterDataProvider,
+  theme: Theme,
+  width: number,
   nowMs = Date.now(),
-) {
+): string {
   if (width <= 0) return "";
 
   const contextText = renderContext(ctx, theme);
@@ -241,7 +282,11 @@ export function renderStatusLine(
   return truncateToWidth(shortest, width, "");
 }
 
-export function installFooter(pi, ctx, state) {
+export function installFooter(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: StatuslineState,
+): () => void {
   let disposeCurrent = noop;
 
   ctx.ui.setFooter((tui, theme, footerData) => {
@@ -251,8 +296,8 @@ export function installFooter(pi, ctx, state) {
     const requestRender = () => {
       if (!disposed) tui.requestRender();
     };
-    let countdownTimer;
-    let countdownRedrawAt;
+    let countdownTimer: ReturnType<typeof setTimeout> | undefined;
+    let countdownRedrawAt: number | undefined;
     state.requestRender = requestRender;
 
     function clearCountdownTimer() {
@@ -261,7 +306,7 @@ export function installFooter(pi, ctx, state) {
       countdownRedrawAt = undefined;
     }
 
-    function scheduleCountdownRedraw(context, nowMs) {
+    function scheduleCountdownRedraw(context: ExtensionContext, nowMs: number): void {
       const redrawAt = getNextCountdownRedrawAt(
         context,
         state.usageSnapshot,

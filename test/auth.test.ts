@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getAccountId, isCodexProvider } from "../src/auth.js";
+import { getAccountId, isCodexProvider } from "../src/auth.ts";
 
-function encode(value) {
+function encode(value: unknown) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 

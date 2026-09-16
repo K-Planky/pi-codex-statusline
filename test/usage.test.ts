@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fetchCodexUsage, parseUsageResponse } from "../src/usage.js";
+import { fetchCodexUsage, parseUsageResponse } from "../src/usage.ts";
+import { authContext, createContext, createModel, deferred, required, type AuthResult } from "./helpers.ts";
 
-function encode(value) {
+function encode(value: unknown) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
-function fakeToken(payload) {
+function fakeToken(payload: unknown) {
   return `${encode({ alg: "none" })}.${encode(payload)}.`;
 }
 
@@ -37,8 +38,8 @@ test("parses 5-hour and weekly windows by duration", () => {
 
   const snapshot = parseUsageResponse(payload);
 
-  assert.equal(snapshot.fiveHour.usedPercent, 25.9);
-  assert.equal(snapshot.weekly.usedPercent, 42.2);
+  assert.equal(required(snapshot.fiveHour).usedPercent, 25.9);
+  assert.equal(required(snapshot.weekly).usedPercent, 42.2);
 });
 
 test("ignores malformed and unrecognized usage windows", () => {
@@ -54,9 +55,13 @@ test("ignores malformed and unrecognized usage windows", () => {
     assert.deepEqual(parseUsageResponse({ rate_limit: { primary_window: window } }),
       { fiveHour: undefined, weekly: undefined });
   }
-  const payload = usagePayload();
-  payload.rate_limit.primary_window.reset_at = "bad";
-  assert.equal(parseUsageResponse(payload).fiveHour.resetAt, undefined);
+  // Construct malformed wire data directly: the parser intentionally accepts unknown.
+  const payload = {
+    rate_limit: {
+      primary_window: { ...usagePayload().rate_limit.primary_window, reset_at: "bad" },
+    },
+  };
+  assert.equal(required(parseUsageResponse(payload).fiveHour).resetAt, undefined);
 });
 
 test("fetches usage with Pi's OAuth token and account header", async () => {
@@ -65,98 +70,78 @@ test("fetches usage with Pi's OAuth token and account header", async () => {
       chatgpt_account_id: "acct_test",
     },
   });
-  const ctx = {
-    model: { provider: "openai-codex", id: "gpt-5.4" },
-    modelRegistry: {
-      async getApiKeyAndHeaders() {
-        return { ok: true, apiKey: token, headers: { "x-test": "yes" } };
-      },
-    },
-  };
+  const ctx = authContext(async () => ({ ok: true, apiKey: token, headers: { "x-test": "yes" } }));
 
   const snapshot = await fetchCodexUsage(ctx, {
     endpoint: "https://example.test/usage",
     fetchImpl: async (url, options) => {
       assert.equal(url, "https://example.test/usage");
-      assert.equal(options.headers.get("authorization"), `Bearer ${token}`);
-      assert.equal(options.headers.get("chatgpt-account-id"), "acct_test");
-      assert.equal(options.headers.get("x-test"), null);
-      assert.equal(options.redirect, "error");
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return usagePayload();
-        },
-      };
+      const headers = new Headers(required(options).headers);
+      assert.equal(headers.get("authorization"), `Bearer ${token}`);
+      assert.equal(headers.get("chatgpt-account-id"), "acct_test");
+      assert.equal(headers.get("x-test"), null);
+      assert.equal(required(options).redirect, "error");
+      return Response.json(usagePayload());
     },
   });
 
-  assert.equal(snapshot.fiveHour.usedPercent, 25.9);
-  assert.equal(snapshot.weekly.usedPercent, 42.2);
+  assert.equal(required(snapshot.fiveHour).usedPercent, 25.9);
+  assert.equal(required(snapshot.weekly).usedPercent, 42.2);
 });
 
 test("rejects unsupported providers and unavailable credentials without fetching", async () => {
   const options = { fetchImpl: () => assert.fail("unexpected fetch") };
-  await assert.rejects(fetchCodexUsage({ model: { provider: "openai" } }, options),
+  await assert.rejects(fetchCodexUsage(createContext({ model: createModel({ provider: "openai" }) }), options),
     /not using the openai-codex provider/);
-  for (const [auth, message] of [
+  const cases: [AuthResult, RegExp][] = [
     [{ ok: false, error: "auth unavailable" }, /auth unavailable/],
-    [{ ok: false }, /Could not resolve/],
     [{ ok: true }, /No ChatGPT OAuth token/],
-  ]) {
-    await assert.rejects(fetchCodexUsage({
-      model: { provider: "openai-codex" },
-      modelRegistry: { getApiKeyAndHeaders: async () => auth },
-    }, options), message);
+  ];
+  for (const [auth, message] of cases) {
+    await assert.rejects(fetchCodexUsage(authContext(async () => auth), options), message);
   }
+  // Deliberately violate the host contract to retain coverage of the runtime fallback.
+  const malformedAuth = authContext(async () => {
+    // @ts-expect-error Pi normally supplies an error string for failed authentication.
+    const result: AuthResult = { ok: false };
+    return result;
+  });
+  await assert.rejects(fetchCodexUsage(malformedAuth, options), /Could not resolve/);
 });
 
 test("an already aborted request does not resolve credentials or fetch", async () => {
   const controller = new AbortController();
   controller.abort(new Error("cancelled"));
-  await assert.rejects(fetchCodexUsage({
-    model: { provider: "openai-codex" },
-    modelRegistry: { getApiKeyAndHeaders: () => assert.fail("resolved credentials") },
-  }, {
-    signal: controller.signal,
-    fetchImpl: () => assert.fail("fetched usage"),
-  }), /cancelled/);
+  await assert.rejects(fetchCodexUsage(
+    authContext(() => assert.fail("resolved credentials")),
+    {
+      signal: controller.signal,
+      fetchImpl: () => assert.fail("fetched usage"),
+    },
+  ), /cancelled/);
 });
 
 test("cancellation stops waiting for auth and prevents a late usage request", async () => {
   const controller = new AbortController();
-  let resolveAuth;
+  const auth = deferred<AuthResult>();
   let settled = false;
-  const pending = fetchCodexUsage({
-    model: { provider: "openai-codex" },
-    modelRegistry: {
-      getApiKeyAndHeaders: () => new Promise((resolve) => { resolveAuth = resolve; }),
-    },
-  }, {
+  const pending = fetchCodexUsage(authContext(() => auth.promise), {
     signal: controller.signal,
     fetchImpl: () => assert.fail("fetched usage after cancellation"),
   });
   const rejection = assert.rejects(pending, /cancelled/).then(() => { settled = true; });
   controller.abort(new Error("cancelled"));
-  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
   // Resolve even on the old implementation so the test leaves no pending work.
   const settledBeforeAuth = settled;
-  resolveAuth({ ok: true, apiKey: "opaque" });
+  auth.resolve({ ok: true, apiKey: "opaque" });
   await rejection;
   assert.equal(settledBeforeAuth, true, "auth must not hold the caller after cancellation");
 });
 
 test("cancels unused HTTP error bodies", async () => {
   let cancelled = false;
-  const ctx = {
-    model: { provider: "openai-codex", id: "gpt-5.4" },
-    modelRegistry: {
-      async getApiKeyAndHeaders() {
-        return { ok: true, apiKey: "opaque" };
-      },
-    },
-  };
+  const ctx = authContext(async () => ({ ok: true, apiKey: "opaque" }));
 
   await assert.rejects(
     fetchCodexUsage(ctx, {
@@ -170,24 +155,11 @@ test("cancels unused HTTP error bodies", async () => {
 });
 
 test("rejects API payloads without recognized windows", async () => {
-  const ctx = {
-    model: { provider: "openai-codex", id: "gpt-5.4" },
-    modelRegistry: {
-      async getApiKeyAndHeaders() {
-        return { ok: true, apiKey: "opaque" };
-      },
-    },
-  };
+  const ctx = authContext(async () => ({ ok: true, apiKey: "opaque" }));
 
   await assert.rejects(
     fetchCodexUsage(ctx, {
-      fetchImpl: async () => ({
-        ok: true,
-        status: 200,
-        async json() {
-          return { rate_limit: {} };
-        },
-      }),
+      fetchImpl: async () => Response.json({ rate_limit: {} }),
     }),
     /no recognized usage windows/i,
   );

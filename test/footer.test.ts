@@ -3,12 +3,32 @@ import { stripVTControlCharacters } from "node:util";
 import test from "node:test";
 
 import { visibleWidth } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
+import type { StatuslineState } from "../src/types.ts";
+import {
+  createContext as hostContext, createModel, contextUsage, emptyFooterData, mockHost,
+  plainTheme, required, thinkingAPI, useFakeTimers, type FooterFactory,
+} from "./helpers.ts";
 
-import { COUNTDOWN_TICK_MS } from "../src/constants.js";
-import { installFooter, renderStatusLine } from "../src/footer.js";
+import { COUNTDOWN_TICK_MS } from "../src/constants.ts";
+import { installFooter, renderStatusLine as render } from "../src/footer.ts";
 
 const NOW = 1_700_000_000_000;
-const plainTheme = { fg: (_color, text) => text };
+
+// Tests may omit unrelated host APIs and state; the production signatures stay strict.
+function renderStatusLine(
+  pi: Partial<ExtensionAPI>,
+  ctx: ExtensionContext,
+  state: Partial<StatuslineState>,
+  footerData: ReadonlyFooterDataProvider,
+  theme: Pick<Theme, "fg">,
+  width: number,
+  nowMs: number,
+) {
+  return render(mockHost<ExtensionAPI>(pi), ctx, {
+    context: undefined, usageSnapshot: undefined, requestRender: () => {}, ...state,
+  }, footerData, mockHost<Theme>(theme), width, nowMs);
+}
 
 function createContext({
   provider = "openai-codex",
@@ -16,16 +36,23 @@ function createContext({
   reasoning = true,
   thinkingLevel = "high",
   percent = 34.9,
+}: {
+  provider?: string;
+  id?: string;
+  reasoning?: boolean;
+  thinkingLevel?: NonNullable<ExtensionContext["thinkingLevel"]>;
+  percent?: number;
 } = {}) {
+  const model = createModel({ provider, id, reasoning });
   return {
-    model: { provider, id, reasoning },
-    thinkingLevel,
-    getContextUsage: () => ({ percent }),
+    ...hostContext({ thinkingLevel, getContextUsage: () => contextUsage(percent) }),
+    model,
   };
 }
 
-function createFooterData(statuses = []) {
+function createFooterData(statuses: [string, string][] = []): ReadonlyFooterDataProvider {
   return {
+    ...emptyFooterData,
     getExtensionStatuses: () => new Map(statuses),
   };
 }
@@ -34,10 +61,12 @@ function createUsageSnapshot() {
   return {
     fiveHour: {
       usedPercent: 28.9,
+      windowSeconds: 18_000,
       resetAt: NOW / 1000 + (2 * 60 + 14) * 60,
     },
     weekly: {
       usedPercent: 61.4,
+      windowSeconds: 604_800,
       resetAt: NOW / 1000 + (4 * 24 + 9) * 60 * 60,
     },
   };
@@ -45,69 +74,53 @@ function createUsageSnapshot() {
 
 test("aligns countdown redraws and preserves an unchanged timer", (t) => {
   const originalNow = Date.now;
-  const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
   t.after(() => {
     Date.now = originalNow;
-    globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
   });
 
   let nowMs = NOW;
   Date.now = () => nowMs;
-  const timers = [];
-  const clearedTimers = [];
-  globalThis.setTimeout = (callback, delay) => {
-    const timer = {
-      callback,
-      delay,
-      unrefCalls: 0,
-      unref() {
-        this.unrefCalls++;
-      },
-    };
-    timers.push(timer);
-    return timer;
-  };
-  globalThis.clearTimeout = (timer) => clearedTimers.push(timer);
+  const { timers, clearedTimers } = useFakeTimers(t);
 
-  let footerFactory;
+  let footerFactory: FooterFactory | undefined;
   const ctx = createContext();
-  ctx.ui = {
+  ctx.ui = mockHost<ExtensionContext["ui"]>({
     setFooter(factory) {
       footerFactory = factory;
     },
-  };
+  });
   const state = {
     context: ctx,
     usageSnapshot: {
       fiveHour: {
         usedPercent: 42,
+        windowSeconds: 18_000,
         resetAt: NOW / 1000 + 90,
       },
+      weekly: undefined,
     },
     requestRender: () => {},
   };
   const disposeFooter = installFooter(
-    { getThinkingLevel: () => "high" },
+    thinkingAPI,
     ctx,
     state,
   );
 
   let redraws = 0;
-  const component = footerFactory(
-    {
+  const component = required(footerFactory)(
+    mockHost<Parameters<FooterFactory>[0]>({
       requestRender() {
         redraws++;
       },
-    },
+    }),
     plainTheme,
     createFooterData(),
   );
 
-  assert.match(component.render(200)[0], /5h 42% \(0h02m\)/);
-  assert.equal(timers[0].delay, 30_000);
-  assert.equal(timers[0].unrefCalls, 1);
+  assert.match(required(component.render(200)[0]), /5h 42% \(0h02m\)/);
+  assert.equal(required(timers[0]).delay, 30_000);
+  assert.equal(required(timers[0]).unrefCalls, 1);
 
   nowMs += 5_000;
   component.render(200);
@@ -115,15 +128,15 @@ test("aligns countdown redraws and preserves an unchanged timer", (t) => {
   assert.deepEqual(clearedTimers, []);
 
   nowMs = NOW + 30_000;
-  timers[0].callback();
+  required(timers[0]).callback();
   assert.equal(redraws, 1);
-  assert.match(component.render(200)[0], /5h 42% \(0h01m\)/);
-  assert.equal(timers[1].delay, COUNTDOWN_TICK_MS);
+  assert.match(required(component.render(200)[0]), /5h 42% \(0h01m\)/);
+  assert.equal(required(timers[1]).delay, COUNTDOWN_TICK_MS);
 
   nowMs += COUNTDOWN_TICK_MS;
-  timers[1].callback();
+  required(timers[1]).callback();
   assert.equal(redraws, 2);
-  assert.match(component.render(200)[0], /5h 0%$/);
+  assert.match(required(component.render(200)[0]), /5h 0%$/);
   assert.equal(timers.length, 2);
 
   state.usageSnapshot.fiveHour.resetAt = nowMs / 1000 + 90;
@@ -139,15 +152,15 @@ test("aligns countdown redraws and preserves an unchanged timer", (t) => {
 
   state.usageSnapshot.fiveHour.resetAt = nowMs / 1000 + 80;
   component.render(200);
-  assert.equal(timers[3].delay, 20_000);
+  assert.equal(required(timers[3]).delay, 20_000);
   assert.deepEqual(clearedTimers, [timers[2]]);
 
   disposeFooter();
   assert.deepEqual(clearedTimers, [timers[2], timers[3]]);
-  component.dispose();
+  required(component.dispose)();
   assert.deepEqual(clearedTimers, [timers[2], timers[3]]);
-  timers[2].callback();
-  timers[3].callback();
+  required(timers[2]).callback();
+  required(timers[3]).callback();
   state.requestRender();
   assert.equal(redraws, 2);
 
@@ -185,7 +198,7 @@ test("capitalizes thinking levels from the context fallback", () => {
     ["medium", "Medium"],
     ["high", "High"],
     ["xhigh", "XHigh"],
-  ]) {
+  ] as const) {
     const line = renderStatusLine(
       {},
       createContext({ thinkingLevel: level }),
@@ -209,9 +222,10 @@ test("uses warning and error theme colors only at their thresholds", () => {
     muted: "\u001b[90m",
     warning: "\u001b[33m",
   };
-  const theme = {
+  const theme: Pick<Theme, "fg"> = {
     fg(color, text) {
-      return `${codes[color]}${text}\u001b[0m`;
+      assert.ok(color in codes, `Unexpected theme color: ${color}`);
+      return `${codes[color as keyof typeof codes]}${text}\u001b[0m`;
     },
   };
   const snapshot = createUsageSnapshot();
@@ -228,7 +242,7 @@ test("uses warning and error theme colors only at their thresholds", () => {
     NOW,
   );
 
-  assert.match(line, /\u001b\[33mctx 60%\u001b\[0m/);
+  assert.match(line, /\u001b\[90mctx 60%\u001b\[0m/);
   assert.match(line, /\u001b\[33m75%\u001b\[0m/);
   assert.match(line, /\u001b\[31m90%\u001b\[0m/);
   assert.equal(
@@ -238,13 +252,28 @@ test("uses warning and error theme colors only at their thresholds", () => {
   );
 });
 
+test("context colors change at the documented 75% and 85% thresholds", () => {
+  const theme: Pick<Theme, "fg"> = { fg: (color, text) => `<${color}>${text}</${color}>` };
+  for (const [percent, color] of [
+    [74.9, "muted"],
+    [75, "warning"],
+    [84.9, "warning"],
+    [85, "error"],
+  ] as const) {
+    const line = renderStatusLine(
+      {}, createContext({ percent }), {}, createFooterData(), theme, 200, NOW,
+    );
+    assert.ok(line.includes(`<${color}>ctx ${Math.floor(percent)}%</${color}>`));
+  }
+});
+
 test("keeps context visible and never exceeds the terminal width", () => {
   const context = createContext({ id: "模型-gpt-5.3-codex-spark-very-long" });
   const state = { usageSnapshot: createUsageSnapshot() };
   const footerData = createFooterData([
     ["status", "\u001b[36mstatus with a very long value\u001b[0m"],
   ]);
-  const theme = {
+  const theme: Pick<Theme, "fg"> = {
     fg: (_color, text) => `\u001b[90m${text}\u001b[0m`,
   };
 
@@ -286,9 +315,9 @@ test("keeps context visible and never exceeds the terminal width", () => {
 test("reads context usage once per render, even at narrow widths", () => {
   let reads = 0;
   const ctx = createContext();
-  ctx.getContextUsage = () => ({ percent: ++reads });
+  ctx.getContextUsage = () => contextUsage(++reads);
 
-  const render = (width) => renderStatusLine(
+  const render = (width: number) => renderStatusLine(
     {}, ctx, { usageSnapshot: createUsageSnapshot() },
     createFooterData(), plainTheme, width, NOW,
   );

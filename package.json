@@ -4,17 +4,17 @@
   "description": "A minimal Pi footer with ChatGPT Codex usage limits",
   "author": "Chachris Martin Kurz (https://github.com/K-Planky)",
   "type": "module",
-  "main": "./index.js",
-  "exports": "./index.js",
+  "main": "./index.ts",
+  "exports": "./index.ts",
   "files": [
-    "index.js",
+    "index.ts",
     "src",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "check": "node --check index.js && node --check src/auth.js && node --check src/constants.js && node --check src/extension.js && node --check src/footer.js && node --check src/format.js && node --check src/usage.js",
-    "test": "node --test"
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "keywords": [
     "pi-package",
@@ -26,13 +26,18 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-tui": "0.74.2"
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@types/node": "22.20.3",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3"
   },
   "repository": {
     "type": "git",
@@ -44,7 +49,7 @@
   },
   "pi": {
     "extensions": [
-      "./index.js"
+      "./index.ts"
     ]
   }
 }

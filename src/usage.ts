@@ -1,23 +1,26 @@
-import { getAccountId, isCodexProvider } from "./auth.js";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+import { getAccountId, isCodexProvider } from "./auth.ts";
+import type { UsageSnapshot, UsageWindow } from "./types.ts";
 import {
   FIVE_HOUR_SECONDS,
   USAGE_URL,
   WEEK_SECONDS,
-} from "./constants.js";
+} from "./constants.ts";
 
-function asRecord(value) {
+function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
-    ? value
+    ? value as Record<string, unknown>
     : undefined;
 }
 
-function finiteNumber(value) {
+function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value
     : undefined;
 }
 
-export function normalizeUsageWindow(value) {
+export function normalizeUsageWindow(value: unknown): UsageWindow | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
 
@@ -29,13 +32,13 @@ export function normalizeUsageWindow(value) {
   return { usedPercent, windowSeconds, resetAt };
 }
 
-export function parseUsageResponse(data) {
+export function parseUsageResponse(data: unknown): UsageSnapshot {
   const payload = asRecord(data);
   const rateLimit = asRecord(payload?.rate_limit);
   const windows = [
     normalizeUsageWindow(rateLimit?.primary_window),
     normalizeUsageWindow(rateLimit?.secondary_window),
-  ].filter(Boolean);
+  ].filter((window) => window !== undefined);
 
   return {
     fiveHour: windows.find(
@@ -50,11 +53,14 @@ export function parseUsageResponse(data) {
 
 // Pi's credential resolver has no AbortSignal parameter. Stop waiting when
 // cancelled, while still observing a late resolution/rejection of its promise.
-async function waitForAuth(promise, signal) {
+async function waitForAuth<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
   if (!signal) return promise;
 
-  let onAbort;
-  const cancelled = new Promise((_resolve, reject) => {
+  let onAbort = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
     onAbort = () => reject(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
     if (signal.aborted) onAbort();
@@ -68,13 +74,23 @@ async function waitForAuth(promise, signal) {
   }
 }
 
+export interface FetchUsageOptions {
+  signal?: AbortSignal;
+  fetchImpl?: typeof globalThis.fetch;
+  endpoint?: string;
+}
+
 export async function fetchCodexUsage(
-  ctx,
-  { signal, fetchImpl = globalThis.fetch, endpoint = USAGE_URL } = {},
-) {
+  ctx: Pick<ExtensionContext, "model" | "modelRegistry">,
+  {
+    signal,
+    fetchImpl = globalThis.fetch,
+    endpoint = USAGE_URL,
+  }: FetchUsageOptions = {},
+): Promise<UsageSnapshot> {
   signal?.throwIfAborted();
   const model = ctx.model;
-  if (!isCodexProvider(model?.provider)) {
+  if (!model || !isCodexProvider(model.provider)) {
     throw new Error("The active model is not using the openai-codex provider.");
   }
 
@@ -100,7 +116,7 @@ export async function fetchCodexUsage(
 
   const response = await fetchImpl(endpoint, {
     headers,
-    signal,
+    signal: signal ?? null,
     redirect: "error",
   });
   if (!response.ok) {

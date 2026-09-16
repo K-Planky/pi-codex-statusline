@@ -5,11 +5,12 @@ import {
   MAX_FIVE_HOUR_RESET_SECONDS,
   MAX_MODEL_WIDTH,
   MAX_WEEK_RESET_SECONDS,
-} from "./constants.js";
+} from "./constants.ts";
+import type { QuotaLabel, UsageWindow } from "./types.ts";
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-export function sanitizeSingleLine(value) {
+export function sanitizeSingleLine(value: unknown): string {
   // Extension statuses may contain colors, but must not move the cursor,
   // clear the screen, or issue OSC commands (e.g. clipboard writes).
   return String(value ?? "")
@@ -22,7 +23,7 @@ export function sanitizeSingleLine(value) {
     .trim();
 }
 
-export function shortenMiddle(value, maxWidth) {
+export function shortenMiddle(value: unknown, maxWidth: number): string {
   const text = sanitizeSingleLine(stripVTControlCharacters(String(value ?? "")));
   if (maxWidth <= 0) return "";
   if (visibleWidth(text) <= maxWidth) return text;
@@ -48,13 +49,16 @@ export function shortenMiddle(value, maxWidth) {
   return `${left}…${right}`;
 }
 
-function titleCaseToken(token) {
+function titleCaseToken(token: string): string {
   const upper = new Set(["api", "oss", "o1", "o3", "o4"]);
   if (upper.has(token.toLowerCase())) return token.toUpperCase();
-  return token ? token[0].toUpperCase() + token.slice(1) : token;
+  return token ? token.charAt(0).toUpperCase() + token.slice(1) : token;
 }
 
-export function formatModelName(modelId, maxWidth = MAX_MODEL_WIDTH) {
+export function formatModelName(
+  modelId: string | undefined,
+  maxWidth = MAX_MODEL_WIDTH,
+): string {
   let id = sanitizeSingleLine(stripVTControlCharacters(String(modelId ?? "")));
   id = id.slice(id.lastIndexOf("/") + 1);
 
@@ -78,12 +82,15 @@ export function formatModelName(modelId, maxWidth = MAX_MODEL_WIDTH) {
   return shortenMiddle(id, maxWidth);
 }
 
-export function clampPercent(value) {
+export function clampPercent(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return Math.floor(Math.max(0, Math.min(100, value)));
 }
 
-export function effectiveUsedPercent(window, nowMs = Date.now()) {
+export function effectiveUsedPercent(
+  window: UsageWindow | undefined,
+  nowMs = Date.now(),
+): number | undefined {
   if (!window) return undefined;
   if (
     typeof window.resetAt === "number" &&
@@ -95,7 +102,11 @@ export function effectiveUsedPercent(window, nowMs = Date.now()) {
   return clampPercent(window.usedPercent);
 }
 
-export function formatResetCountdown(resetAt, maxSeconds, nowMs = Date.now()) {
+export function formatResetCountdown(
+  resetAt: number | undefined,
+  maxSeconds: number,
+  nowMs = Date.now(),
+): string | undefined {
   if (typeof resetAt !== "number" || !Number.isFinite(resetAt)) return undefined;
 
   const secondsLeft = resetAt - nowMs / 1000;
@@ -111,7 +122,11 @@ export function formatResetCountdown(resetAt, maxSeconds, nowMs = Date.now()) {
   return `${totalHours}h${String(minutes).padStart(2, "0")}m`;
 }
 
-export function formatWindowCountdown(label, window, nowMs = Date.now()) {
+export function formatWindowCountdown(
+  label: QuotaLabel,
+  window: UsageWindow | undefined,
+  nowMs = Date.now(),
+): string | undefined {
   const maxSeconds =
     label === "5h"
       ? MAX_FIVE_HOUR_RESET_SECONDS

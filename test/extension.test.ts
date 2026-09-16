@@ -1,99 +1,80 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { ExtensionAPI, ExtensionContext, ExtensionEvent } from "@earendil-works/pi-coding-agent";
+import {
+  createContext, createModel, createFooter, deferred, mockHost, required, useFakeTimers,
+  type AuthResult, type FooterFactory,
+} from "./helpers.ts";
 
-import { USAGE_POLL_MS, USAGE_TIMEOUT_MS } from "../src/constants.js";
-import codexStatusline from "../src/extension.js";
-
-const plainTheme = { fg: (_color, text) => text };
-const emptyFooterData = { getExtensionStatuses: () => new Map() };
+import { USAGE_POLL_MS, USAGE_TIMEOUT_MS } from "../src/constants.ts";
+import codexStatusline from "../index.ts";
 
 function flushAsyncWork() {
-  return new Promise((resolve) => setImmediate(resolve));
+  return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-function usageResponse(usedPercent, resetAt) {
-  return {
-    ok: true,
-    status: 200,
-    async json() {
-      return {
-        rate_limit: {
-          primary_window: {
-            used_percent: usedPercent,
-            limit_window_seconds: 5 * 60 * 60,
-            reset_at: resetAt,
-          },
-        },
-      };
+function usageResponse(usedPercent: number, resetAt?: number): Response {
+  return Response.json({
+    rate_limit: {
+      primary_window: {
+        used_percent: usedPercent,
+        limit_window_seconds: 5 * 60 * 60,
+        reset_at: resetAt,
+      },
     },
-  };
-}
-
-function useFakeTimers(t) {
-  const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
-  t.after(() => {
-    globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
   });
-
-  const timers = [];
-  const clearedTimers = [];
-  globalThis.setTimeout = (callback, delay) => {
-    const timer = { callback, delay, unref() {} };
-    timers.push(timer);
-    return timer;
-  };
-  globalThis.clearTimeout = (timer) => clearedTimers.push(timer);
-  return { timers, clearedTimers };
 }
+
+type TestHandler = (event: ExtensionEvent, ctx: ExtensionContext) => unknown;
+type TestEvent = "session_start" | "session_shutdown" | "agent_start" | "agent_end"
+  | "agent_settled" | "model_select" | "thinking_level_select";
 
 function createHarness() {
-  const handlers = new Map();
-  const commands = new Map();
-  const pi = {
+  const handlers = new Map<string, TestHandler>();
+  const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
+  const pi = mockHost<ExtensionAPI>({
     registerCommand(name, command) {
       commands.set(name, command);
     },
     getThinkingLevel: () => "high",
     on(event, handler) {
-      handlers.set(event, handler);
+      // The heterogeneous registry erases the overload's event/handler pairing.
+      // emit() below always dispatches a matching, type-checked event fixture.
+      handlers.set(event, handler as TestHandler);
     },
-  };
+  });
 
-  let footerFactory;
-  const ctx = {
-    mode: "tui",
-    model: {
-      provider: "openai-codex",
-      id: "gpt-5.4",
-      reasoning: true,
-    },
-    thinkingLevel: "high",
-    getContextUsage: () => ({ percent: 20 }),
-    modelRegistry: {
-      async getApiKeyAndHeaders() {
-        return { ok: true, apiKey: "opaque-token" };
-      },
-    },
-    ui: {
-      setFooter(factory) {
-        footerFactory = factory;
-      },
-    },
-  };
+  let footerFactory: FooterFactory | undefined;
+  const ctx = createContext({
+    ui: mockHost<ExtensionContext["ui"]>({
+      setFooter(factory) { footerFactory = factory; },
+    }),
+  });
+
+  function emit(type: TestEvent) {
+    const events = {
+      session_start: { type: "session_start", reason: "startup" },
+      session_shutdown: { type: "session_shutdown", reason: "quit" },
+      agent_start: { type: "agent_start" },
+      agent_end: { type: "agent_end", messages: [] },
+      agent_settled: { type: "agent_settled" },
+      model_select: { type: "model_select", model: required(ctx.model), previousModel: undefined, source: "set" },
+      thinking_level_select: { type: "thinking_level_select", level: "high", previousLevel: "low" },
+    } satisfies { [K in TestEvent]: Extract<ExtensionEvent, { type: K }> };
+    // agent_end is intentionally unhandled: low-level run boundaries must not stop polling.
+    const handler = handlers.get(type);
+    if (type !== "agent_end") assert.ok(handler, `Missing handler for ${type}`);
+    return handler?.(events[type], ctx);
+  }
 
   codexStatusline(pi);
   return {
     ctx,
-    handlers,
-    commands,
-    start() {
-      handlers.get("session_start")({}, ctx);
-    },
+    emit,
+    command: () => required(commands.get("usage")),
+    start: () => emit("session_start"),
     createFooter(requestRender = () => {}) {
-      assert.equal(typeof footerFactory, "function");
-      return footerFactory({ requestRender }, plainTheme, emptyFooterData);
+      return createFooter(required(footerFactory), requestRender);
     },
   };
 }
@@ -113,43 +94,40 @@ test("refreshes usage at session start and settlement, not idle display changes"
   assert.equal(requests, 1);
 
   const component = harness.createFooter();
-  assert.match(component.render(200)[0], /5h 10%/);
+  assert.match(required(component.render(200)[0]), /5h 10%/);
 
-  harness.handlers.get("thinking_level_select")({}, harness.ctx);
-  harness.ctx.model = { provider: "openai", id: "gpt-5.4" };
-  harness.handlers.get("model_select")({}, harness.ctx);
-  harness.ctx.model = {
+  harness.emit("thinking_level_select");
+  harness.ctx.model = createModel({ provider: "openai", id: "gpt-5.4" });
+  harness.emit("model_select");
+  harness.ctx.model = createModel({
     provider: "openai-codex",
     id: "gpt-5.4",
     reasoning: true,
-  };
-  harness.handlers.get("model_select")({}, harness.ctx);
+  });
+  harness.emit("model_select");
   await flushAsyncWork();
   assert.equal(requests, 1);
 
-  harness.handlers.get("agent_settled")({}, harness.ctx);
+  harness.emit("agent_settled");
   await flushAsyncWork();
   assert.equal(requests, 2);
-  assert.match(component.render(200)[0], /5h 20%/);
+  assert.match(required(component.render(200)[0]), /5h 20%/);
 
-  harness.handlers.get("session_shutdown")();
-  component.dispose();
+  harness.emit("session_shutdown");
+  required(component.dispose)();
 });
 
-function createPollingHarness(t, fetchImpl) {
+function createPollingHarness(t: TestContext, fetchImpl: typeof globalThis.fetch) {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const harness = createHarness();
   t.after(() => {
-    harness.handlers.get("session_shutdown")();
+    harness.emit("session_shutdown");
     globalThis.fetch = originalFetch;
   });
   return {
     ...harness,
-    emit(event) {
-      harness.handlers.get(event)?.({}, harness.ctx);
-    },
     async tick(ms = USAGE_POLL_MS) {
       t.mock.timers.tick(ms);
       await flushAsyncWork();
@@ -166,13 +144,13 @@ test("usage silently refreshes while idle and preserves usage on failure", async
   harness.start();
   await flushAsyncWork();
   const component = harness.createFooter();
-  const command = harness.commands.get("usage");
+  const command = harness.command();
   // No messaging, persistence, or notification APIs are provided by the harness.
   assert.equal(await command.handler("", harness.ctx), undefined);
   assert.equal(requests, 2);
-  assert.match(component.render(200)[0], /5h 20%/);
+  assert.match(required(component.render(200)[0]), /5h 20%/);
   assert.equal(await command.handler("", harness.ctx), undefined);
-  assert.match(component.render(200)[0], /5h 20%/);
+  assert.match(required(component.render(200)[0]), /5h 20%/);
   await harness.tick(USAGE_POLL_MS * 3);
   assert.equal(requests, 3);
 });
@@ -180,9 +158,9 @@ test("usage silently refreshes while idle and preserves usage on failure", async
 test("usage quietly skips non-Codex models and inactive sessions", async (t) => {
   let requests = 0;
   const harness = createPollingHarness(t, async () => usageResponse(++requests));
-  const command = harness.commands.get("usage");
+  const command = harness.command();
   await command.handler("", harness.ctx);
-  harness.ctx.model = { provider: "openai", id: "gpt-5.4" };
+  harness.ctx.model = createModel({ provider: "openai", id: "gpt-5.4" });
   harness.start();
   await command.handler("", harness.ctx);
   harness.emit("session_shutdown");
@@ -204,7 +182,7 @@ test("polls every minute only while working, including retries and follow-ups", 
   assert.equal(requests, 1);
   await harness.tick(1);
   assert.equal(requests, 2);
-  assert.match(component.render(200)[0], /5h 20%/);
+  assert.match(required(component.render(200)[0]), /5h 20%/);
 
   // Low-level run boundaries must not stop or postpone the next poll.
   await harness.tick(USAGE_POLL_MS / 2);
@@ -233,12 +211,12 @@ test("pauses polling away from Codex and resumes during the same task", async (t
   harness.emit("agent_start");
   await harness.tick(USAGE_POLL_MS / 2);
 
-  harness.ctx.model = { provider: "openai", id: "gpt-5.4" };
+  harness.ctx.model = createModel({ provider: "openai", id: "gpt-5.4" });
   harness.emit("model_select");
   await harness.tick(USAGE_POLL_MS * 3);
   assert.equal(requests, 1);
 
-  harness.ctx.model = { provider: "openai-codex", id: "gpt-5.4" };
+  harness.ctx.model = createModel({ provider: "openai-codex", id: "gpt-5.4" });
   harness.emit("model_select");
   await harness.tick();
   assert.equal(requests, 2);
@@ -255,20 +233,20 @@ test("polling recovers quietly from failures without losing the last snapshot", 
   const component = harness.createFooter();
   harness.emit("agent_start");
   await harness.tick();
-  assert.match(component.render(200)[0], /5h 10%/);
+  assert.match(required(component.render(200)[0]), /5h 10%/);
   await harness.tick();
   assert.equal(requests, 3);
-  assert.match(component.render(200)[0], /5h 30%/);
+  assert.match(required(component.render(200)[0]), /5h 30%/);
 });
 
 test("shutdown cancels polling and ignores its in-flight response", async (t) => {
   let requests = 0;
-  let resolveFetch;
-  let signal;
+  const fetchResult = deferred<Response>();
+  let signal: AbortSignal | null | undefined;
   const harness = createPollingHarness(t, async (_url, options) => {
     if (++requests === 1) return usageResponse(10);
-    signal = options.signal;
-    return new Promise((resolve) => { resolveFetch = resolve; });
+    signal = options?.signal;
+    return fetchResult.promise;
   });
   harness.start();
   await flushAsyncWork();
@@ -278,8 +256,8 @@ test("shutdown cancels polling and ignores its in-flight response", async (t) =>
   await harness.tick();
   assert.equal(requests, 2);
   harness.emit("session_shutdown");
-  assert.equal(signal.aborted, true);
-  resolveFetch(usageResponse(90));
+  assert.equal(required(signal).aborted, true);
+  fetchResult.resolve(usageResponse(90));
   await harness.tick(USAGE_POLL_MS * 3);
   assert.equal(requests, 2);
   assert.equal(redraws, 0);
@@ -287,12 +265,12 @@ test("shutdown cancels polling and ignores its in-flight response", async (t) =>
 
 test("retries a timed-out poll and discards its late response", async (t) => {
   let requests = 0;
-  let resolveFetch;
-  let signal;
+  const fetchResult = deferred<Response>();
+  let signal: AbortSignal | null | undefined;
   const harness = createPollingHarness(t, async (_url, options) => {
     if (++requests !== 2) return usageResponse(requests * 10);
-    signal = options.signal;
-    return new Promise((resolve) => { resolveFetch = resolve; });
+    signal = options?.signal;
+    return fetchResult.promise;
   });
   harness.start();
   await flushAsyncWork();
@@ -300,14 +278,14 @@ test("retries a timed-out poll and discards its late response", async (t) => {
   harness.emit("agent_start");
   await harness.tick();
   await harness.tick(USAGE_TIMEOUT_MS);
-  assert.equal(signal.aborted, true);
+  assert.equal(required(signal).aborted, true);
   await harness.tick(USAGE_POLL_MS - USAGE_TIMEOUT_MS);
   assert.equal(requests, 3);
-  assert.match(component.render(200)[0], /5h 30%/);
+  assert.match(required(component.render(200)[0]), /5h 30%/);
 
-  resolveFetch(usageResponse(90));
+  fetchResult.resolve(usageResponse(90));
   await flushAsyncWork();
-  assert.match(component.render(200)[0], /5h 30%/);
+  assert.match(required(component.render(200)[0]), /5h 30%/);
 });
 
 test("usage command times out while credentials are unresolved", async (t) => {
@@ -317,18 +295,16 @@ test("usage command times out while credentials are unresolved", async (t) => {
   await flushAsyncWork();
   const component = harness.createFooter();
 
-  let resolveAuth;
-  harness.ctx.modelRegistry.getApiKeyAndHeaders = () => new Promise((resolve) => {
-    resolveAuth = resolve;
-  });
+  const auth = deferred<AuthResult>();
+  harness.ctx.modelRegistry.getApiKeyAndHeaders = () => auth.promise;
   let completed = false;
-  const command = harness.commands.get("usage").handler("", harness.ctx)
+  const command = harness.command().handler("", harness.ctx)
     .then(() => { completed = true; });
   await harness.tick(USAGE_TIMEOUT_MS);
   assert.equal(completed, true);
-  assert.match(component.render(200)[0], /5h 10%/);
+  assert.match(required(component.render(200)[0]), /5h 10%/);
 
-  resolveAuth({ ok: true, apiKey: "opaque-token" });
+  auth.resolve({ ok: true, apiKey: "opaque-token" });
   await command;
   await flushAsyncWork();
   assert.equal(requests, 1);
@@ -354,7 +330,7 @@ test("session restart clears the old poll and starts idle", async (t) => {
 test("does not fetch or poll outside TUI mode", async (t) => {
   let requests = 0;
   const harness = createPollingHarness(t, async () => usageResponse(++requests));
-  for (const mode of ["rpc", "json", "print"]) {
+  for (const mode of ["rpc", "json", "print"] as const) {
     harness.ctx.mode = mode;
     harness.start();
     harness.emit("agent_start");
@@ -371,13 +347,11 @@ test("ignores an obsolete usage response after a provider switch", async (t) => 
     globalThis.fetch = originalFetch;
   });
 
-  let resolveFetch;
-  let requestSignal;
+  const fetchResult = deferred<Response>();
+  let requestSignal: AbortSignal | null | undefined;
   globalThis.fetch = (_url, options) => {
-    requestSignal = options.signal;
-    return new Promise((resolve) => {
-      resolveFetch = resolve;
-    });
+    requestSignal = options?.signal;
+    return fetchResult.promise;
   };
 
   const harness = createHarness();
@@ -385,23 +359,23 @@ test("ignores an obsolete usage response after a provider switch", async (t) => 
   await flushAsyncWork();
   const component = harness.createFooter();
 
-  harness.ctx.model = { provider: "openai", id: "gpt-5.4" };
-  harness.handlers.get("model_select")({}, harness.ctx);
-  assert.equal(requestSignal.aborted, true);
+  harness.ctx.model = createModel({ provider: "openai", id: "gpt-5.4" });
+  harness.emit("model_select");
+  assert.equal(required(requestSignal).aborted, true);
 
-  harness.ctx.model = {
+  harness.ctx.model = createModel({
     provider: "openai-codex",
     id: "gpt-5.4",
     reasoning: true,
-  };
-  harness.handlers.get("model_select")({}, harness.ctx);
+  });
+  harness.emit("model_select");
 
-  resolveFetch(usageResponse(42));
+  fetchResult.resolve(usageResponse(42));
   await flushAsyncWork();
-  assert.doesNotMatch(component.render(200)[0], /5h 42%/);
+  assert.doesNotMatch(required(component.render(200)[0]), /5h 42%/);
 
-  harness.handlers.get("session_shutdown")();
-  component.dispose();
+  harness.emit("session_shutdown");
+  required(component.dispose)();
 });
 
 test("session shutdown disposes an active countdown timer", async (t) => {
@@ -425,14 +399,14 @@ test("session shutdown disposes an active countdown timer", async (t) => {
   let redraws = 0;
   const component = harness.createFooter(() => redraws++);
   component.render(200);
-  assert.equal(timers[1].delay, 30_000);
+  assert.equal(required(timers[1]).delay, 30_000);
 
-  harness.handlers.get("session_shutdown")();
+  harness.emit("session_shutdown");
   assert.deepEqual(clearedTimers, [timers[0], timers[1]]);
-  timers[1].callback();
+  required(timers[1]).callback();
   assert.equal(redraws, 0);
 
-  component.dispose();
+  required(component.dispose)();
   assert.deepEqual(clearedTimers, [timers[0], timers[1]]);
 });
 
@@ -442,13 +416,11 @@ test("ignores a usage response that arrives after its timeout", async (t) => {
     globalThis.fetch = originalFetch;
   });
 
-  let resolveFetch;
-  let requestSignal;
+  const fetchResult = deferred<Response>();
+  let requestSignal: AbortSignal | null | undefined;
   globalThis.fetch = (_url, options) => {
-    requestSignal = options.signal;
-    return new Promise((resolve) => {
-      resolveFetch = resolve;
-    });
+    requestSignal = options?.signal;
+    return fetchResult.promise;
   };
 
   const { timers, clearedTimers } = useFakeTimers(t);
@@ -458,15 +430,15 @@ test("ignores a usage response that arrives after its timeout", async (t) => {
   const component = harness.createFooter();
 
   assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, USAGE_TIMEOUT_MS);
-  timers[0].callback();
-  assert.equal(requestSignal.aborted, true);
+  assert.equal(required(timers[0]).delay, USAGE_TIMEOUT_MS);
+  required(timers[0]).callback();
+  assert.equal(required(requestSignal).aborted, true);
 
-  resolveFetch(usageResponse(42));
+  fetchResult.resolve(usageResponse(42));
   await flushAsyncWork();
   assert.deepEqual(clearedTimers, [timers[0]]);
-  assert.doesNotMatch(component.render(200)[0], /5h 42%/);
+  assert.doesNotMatch(required(component.render(200)[0]), /5h 42%/);
 
-  harness.handlers.get("session_shutdown")();
-  component.dispose();
+  harness.emit("session_shutdown");
+  required(component.dispose)();
 });

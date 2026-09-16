@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { usageWindow } from "./helpers.ts";
 
 import {
   effectiveUsedPercent,
@@ -8,7 +9,7 @@ import {
   formatResetCountdown,
   shortenMiddle,
   sanitizeSingleLine,
-} from "../src/format.js";
+} from "../src/format.ts";
 
 test("formats Codex model ids as compact display names", () => {
   assert.equal(formatModelName("gpt-5.4"), "GPT-5.4");
@@ -57,8 +58,8 @@ test("reset countdowns round up and switch to day notation", () => {
 test("an expired usage window reads zero percent", () => {
   const now = 1_700_000_000_000;
   assert.equal(
-    effectiveUsedPercent({ usedPercent: 91, resetAt: now / 1000 - 1 }, now),
+    effectiveUsedPercent(usageWindow({ usedPercent: 91, resetAt: now / 1000 - 1 }), now),
     0,
   );
-  assert.equal(effectiveUsedPercent({ usedPercent: 42.9 }, now), 42);
+  assert.equal(effectiveUsedPercent(usageWindow({ usedPercent: 42.9 }), now), 42);
 });

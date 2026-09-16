@@ -1,31 +1,29 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import test from "node:test";
+import { createServer, type RequestListener } from "node:http";
+import test, { type TestContext } from "node:test";
+import { authContext, deferred } from "./helpers.ts";
 
-import { fetchCodexUsage } from "../src/usage.js";
+import { fetchCodexUsage } from "../src/usage.ts";
 
-const ctx = {
-  model: { provider: "openai-codex", id: "gpt-5.4" },
-  modelRegistry: {
-    getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-token" }),
-  },
-};
+const ctx = authContext(async () => ({ ok: true, apiKey: "test-token" }));
 
-async function serve(t, handler) {
+async function serve(t: TestContext, handler: RequestListener) {
   const server = createServer(handler);
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
-  t.after(() => new Promise((resolve, reject) => {
+  t.after(() => new Promise<void>((resolve, reject) => {
     server.closeAllConnections();
     server.close((error) => error ? reject(error) : resolve());
   }));
-  return `http://127.0.0.1:${server.address().port}/usage`;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return `http://127.0.0.1:${address.port}/usage`;
 }
 
 test("real fetch refuses redirects rather than forwarding credentials", async (t) => {
-  const paths = [];
+  const paths: (string | undefined)[] = [];
   const endpoint = await serve(t, (request, response) => {
     paths.push(request.url);
     response.writeHead(302, { location: "/redirect-target" });
@@ -37,17 +35,16 @@ test("real fetch refuses redirects rather than forwarding credentials", async (t
 });
 
 test("real fetch can abort an unfinished response", async (t) => {
-  let bodyStarted;
-  const started = new Promise((resolve) => { bodyStarted = resolve; });
+  const started = deferred<void>();
   const endpoint = await serve(t, (_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
     response.write('{"rate_limit":');
-    bodyStarted();
+    started.resolve();
   });
   const controller = new AbortController();
   const pending = fetchCodexUsage(ctx, { endpoint, signal: controller.signal });
   const rejected = assert.rejects(pending, { name: "AbortError" });
-  await started;
+  await started.promise;
   controller.abort();
   await rejected;
 });

@@ -1,21 +1,24 @@
-import { isCodexProvider } from "./auth.js";
-import { USAGE_POLL_MS, USAGE_TIMEOUT_MS } from "./constants.js";
-import { installFooter } from "./footer.js";
-import { fetchCodexUsage } from "./usage.js";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+import { isCodexProvider } from "./auth.ts";
+import { USAGE_POLL_MS, USAGE_TIMEOUT_MS } from "./constants.ts";
+import { installFooter } from "./footer.ts";
+import type { StatuslineState } from "./types.ts";
+import { fetchCodexUsage } from "./usage.ts";
 
 const noop = () => {};
 
-export default function codexStatusline(pi) {
-  const state = {
+export default function codexStatusline(pi: ExtensionAPI): void {
+  const state: StatuslineState = {
     context: undefined,
     usageSnapshot: undefined,
     requestRender: noop,
   };
   let active = false;
   let working = false;
-  let usagePollTimer;
-  let usageProvider;
-  let requestController;
+  let usagePollTimer: ReturnType<typeof setTimeout> | undefined;
+  let usageProvider: string | undefined;
+  let requestController: AbortController | undefined;
   let disposeFooter = noop;
 
   function cancelUsageRequest() {
@@ -46,10 +49,10 @@ export default function codexStatusline(pi) {
     usagePollTimer = timer;
   }
 
-  function updateContext(ctx) {
+  function updateContext(ctx: ExtensionContext): void {
     state.context = ctx;
     const provider = isCodexProvider(ctx.model?.provider)
-      ? ctx.model.provider
+      ? ctx.model?.provider
       : undefined;
 
     if (provider !== usageProvider) {
@@ -61,8 +64,8 @@ export default function codexStatusline(pi) {
     }
   }
 
-  async function refreshUsage(ctx) {
-    if (!active || !usageProvider) return;
+  async function refreshUsage(ctx: ExtensionContext | undefined): Promise<void> {
+    if (!active || !usageProvider || !ctx) return;
 
     cancelUsageRequest();
     const controller = new AbortController();
@@ -106,7 +109,7 @@ export default function codexStatusline(pi) {
     usageProvider = undefined;
   }
 
-  function handleDisplayChange(_event, ctx) {
+  function handleDisplayChange(_event: unknown, ctx: ExtensionContext): void {
     if (!active) return;
     updateContext(ctx);
     state.requestRender();

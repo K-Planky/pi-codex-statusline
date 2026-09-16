@@ -26,7 +26,7 @@ pi install git:github.com/K-Planky/pi-codex-statusline
 For local development:
 
 ```sh
-pi -e ./index.js
+pi -e ./index.ts
 ```
 
 Then use `/login` in Pi and authenticate the **OpenAI Codex** provider. Quota segments appear only while an `openai-codex` model is active.
@@ -64,11 +64,25 @@ Refreshes have a 15-second deadline, including time spent waiting for Pi's crede
 
 ## Development
 
+Use Node.js 22.19+ and `npm ci`. The extension is checked against Pi 0.85.1.
+
 ```sh
-npm test
+npm ci
 npm run check
+npm test
 npm pack --dry-run
 ```
+
+`index.ts` is the entry point for both local use and package installation. Pi loads
+TypeScript directly; no build step or generated JavaScript is needed, including
+when installing from Git with development dependencies omitted.
+
+Source and tests use strict TypeScript, Pi's official API types, readonly usage
+models, and runtime validation of untrusted JSON. `npm run check` checks both
+source and tests, including indexed access and exact optional properties.
+`npm test` runs the TypeScript regression tests via `tsx`. Shared typed fixtures
+model the host APIs, and malformed-input cases remain explicit without weakening
+the production types.
 
 ## Author
 

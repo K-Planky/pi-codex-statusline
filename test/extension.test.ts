@@ -41,6 +41,7 @@ function createHarness() {
       // The heterogeneous registry erases the overload's event/handler pairing.
       // emit() below always dispatches a matching, type-checked event fixture.
       handlers.set(event, handler as TestHandler);
+      return () => { handlers.delete(event); };
     },
   });
 

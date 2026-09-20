@@ -64,7 +64,7 @@ Refreshes have a 15-second deadline, including time spent waiting for Pi's crede
 
 ## Development
 
-Use Node.js 22.19+ and `npm ci`. The extension is checked against Pi 0.85.1.
+Use Node.js 22.19+ and `npm ci`. The extension is checked against Pi 0.86.1.
 
 ```sh
 npm ci

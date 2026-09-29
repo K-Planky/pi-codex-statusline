@@ -70,7 +70,11 @@ test("fetches usage with Pi's OAuth token and account header", async () => {
       chatgpt_account_id: "acct_test",
     },
   });
-  const ctx = authContext(async () => ({ ok: true, apiKey: token, headers: { "x-test": "yes" } }));
+  const ctx = authContext(async (provider) => {
+    assert.equal(provider, "openai-codex", "only the legacy quota credential is resolved");
+    return { auth: { apiKey: token, headers: { "x-test": "yes" } } };
+  });
+  ctx.modelRegistry.getApiKeyAndHeaders = async () => assert.fail("resolved active model token");
 
   const snapshot = await fetchCodexUsage(ctx, {
     endpoint: "https://example.test/usage",
@@ -91,22 +95,14 @@ test("fetches usage with Pi's OAuth token and account header", async () => {
 
 test("rejects unsupported providers and unavailable credentials without fetching", async () => {
   const options = { fetchImpl: () => assert.fail("unexpected fetch") };
-  await assert.rejects(fetchCodexUsage(createContext({ model: createModel({ provider: "openai" }) }), options),
-    /not using the openai-codex provider/);
-  const cases: [AuthResult, RegExp][] = [
-    [{ ok: false, error: "auth unavailable" }, /auth unavailable/],
-    [{ ok: true }, /No ChatGPT OAuth token/],
-  ];
-  for (const [auth, message] of cases) {
-    await assert.rejects(fetchCodexUsage(authContext(async () => auth), options), message);
+  await assert.rejects(fetchCodexUsage(createContext({ model: createModel({ provider: "openai-codex" }) }), options),
+    /not using the openai ChatGPT login/);
+  for (const auth of [undefined, { auth: {} }]) {
+    await assert.rejects(fetchCodexUsage(authContext(async () => auth), options), /No legacy ChatGPT OAuth token/);
   }
-  // Deliberately violate the host contract to retain coverage of the runtime fallback.
-  const malformedAuth = authContext(async () => {
-    // @ts-expect-error Pi normally supplies an error string for failed authentication.
-    const result: AuthResult = { ok: false };
-    return result;
-  });
-  await assert.rejects(fetchCodexUsage(malformedAuth, options), /Could not resolve/);
+  await assert.rejects(fetchCodexUsage(authContext(async () => {
+    throw new Error("auth unavailable");
+  }), options), /auth unavailable/);
 });
 
 test("an already aborted request does not resolve credentials or fetch", async () => {
@@ -134,14 +130,14 @@ test("cancellation stops waiting for auth and prevents a late usage request", as
   await new Promise<void>((resolve) => setImmediate(resolve));
   // Resolve even on the old implementation so the test leaves no pending work.
   const settledBeforeAuth = settled;
-  auth.resolve({ ok: true, apiKey: "opaque" });
+  auth.resolve({ auth: { apiKey: "opaque" } });
   await rejection;
   assert.equal(settledBeforeAuth, true, "auth must not hold the caller after cancellation");
 });
 
 test("cancels unused HTTP error bodies", async () => {
   let cancelled = false;
-  const ctx = authContext(async () => ({ ok: true, apiKey: "opaque" }));
+  const ctx = authContext(async () => ({ auth: { apiKey: "opaque" } }));
 
   await assert.rejects(
     fetchCodexUsage(ctx, {
@@ -155,7 +151,7 @@ test("cancels unused HTTP error bodies", async () => {
 });
 
 test("rejects API payloads without recognized windows", async () => {
-  const ctx = authContext(async () => ({ ok: true, apiKey: "opaque" }));
+  const ctx = authContext(async () => ({ auth: { apiKey: "opaque" } }));
 
   await assert.rejects(
     fetchCodexUsage(ctx, {
@@ -163,4 +159,13 @@ test("rejects API payloads without recognized windows", async () => {
     }),
     /no recognized usage windows/i,
   );
+});
+
+
+test("OpenAI API-key mode does not resolve a quota credential or make a request", async () => {
+  const ctx = authContext(async () => assert.fail("resolved quota credential"));
+  ctx.modelRegistry.isUsingOAuth = () => false;
+  await assert.rejects(fetchCodexUsage(ctx, {
+    fetchImpl: async () => assert.fail("fetched quota"),
+  }), /not using the openai ChatGPT login/);
 });

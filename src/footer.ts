@@ -6,7 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-import { isCodexProvider } from "./auth.ts";
+import { isChatGPTLogin } from "./auth.ts";
 import {
   CONTEXT_CRITICAL_PERCENT,
   CONTEXT_WARN_PERCENT,
@@ -175,7 +175,7 @@ function getNextCountdownRedrawAt(
   snapshot: UsageSnapshot | undefined,
   nowMs: number,
 ): number | undefined {
-  if (!isCodexProvider(ctx.model?.provider) || !snapshot) return undefined;
+  if (!isChatGPTLogin(ctx) || !snapshot) return undefined;
 
   let nextRedrawAt = Number.POSITIVE_INFINITY;
 
@@ -225,7 +225,7 @@ function buildLine(
 
   segments.push(contextText);
 
-  if (isCodexProvider(ctx.model?.provider) && state.usageSnapshot) {
+  if (isChatGPTLogin(ctx) && state.usageSnapshot) {
     if (layout.fiveHour !== false) {
       const fiveHour = renderQuota(
         "5h",

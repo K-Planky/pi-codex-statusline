@@ -31,7 +31,7 @@ function renderStatusLine(
 }
 
 function createContext({
-  provider = "openai-codex",
+  provider = "openai",
   id = "gpt-5.3-codex-spark",
   reasoning = true,
   thinkingLevel = "high",
@@ -140,11 +140,11 @@ test("aligns countdown redraws and preserves an unchanged timer", (t) => {
   assert.equal(timers.length, 2);
 
   state.usageSnapshot.fiveHour.resetAt = nowMs / 1000 + 90;
-  ctx.model.provider = "openai";
+  ctx.model.provider = "openai-codex";
   component.render(200);
   assert.equal(timers.length, 2);
 
-  ctx.model.provider = "openai-codex";
+  ctx.model.provider = "openai";
   component.render(200);
   nowMs += 5_000;
   component.render(200);
@@ -334,7 +334,7 @@ test("renders unknown context safely and hides quota for other providers", () =>
   const line = renderStatusLine(
     {},
     createContext({
-      provider: "openai",
+      provider: "openai-codex",
       reasoning: false,
       percent: Number.POSITIVE_INFINITY,
     }),

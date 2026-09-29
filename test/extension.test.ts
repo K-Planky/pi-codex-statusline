@@ -98,10 +98,10 @@ test("refreshes usage at session start and settlement, not idle display changes"
   assert.match(required(component.render(200)[0]), /5h 10%/);
 
   harness.emit("thinking_level_select");
-  harness.ctx.model = createModel({ provider: "openai", id: "gpt-5.4" });
+  harness.ctx.model = createModel({ provider: "openai-codex", id: "gpt-5.4" });
   harness.emit("model_select");
   harness.ctx.model = createModel({
-    provider: "openai-codex",
+    provider: "openai",
     id: "gpt-5.4",
     reasoning: true,
   });
@@ -156,12 +156,12 @@ test("usage silently refreshes while idle and preserves usage on failure", async
   assert.equal(requests, 3);
 });
 
-test("usage quietly skips non-Codex models and inactive sessions", async (t) => {
+test("usage quietly skips unsupported providers and inactive sessions", async (t) => {
   let requests = 0;
   const harness = createPollingHarness(t, async () => usageResponse(++requests));
   const command = harness.command();
   await command.handler("", harness.ctx);
-  harness.ctx.model = createModel({ provider: "openai", id: "gpt-5.4" });
+  harness.ctx.model = createModel({ provider: "openai-codex", id: "gpt-5.4" });
   harness.start();
   await command.handler("", harness.ctx);
   harness.emit("session_shutdown");
@@ -204,7 +204,7 @@ test("polls every minute only while working, including retries and follow-ups", 
   assert.equal(requests, 5);
 });
 
-test("pauses polling away from Codex and resumes during the same task", async (t) => {
+test("pauses polling away from the new OpenAI login and resumes during the same task", async (t) => {
   let requests = 0;
   const harness = createPollingHarness(t, async () => usageResponse(++requests));
   harness.start();
@@ -212,12 +212,12 @@ test("pauses polling away from Codex and resumes during the same task", async (t
   harness.emit("agent_start");
   await harness.tick(USAGE_POLL_MS / 2);
 
-  harness.ctx.model = createModel({ provider: "openai", id: "gpt-5.4" });
+  harness.ctx.model = createModel({ provider: "openai-codex", id: "gpt-5.4" });
   harness.emit("model_select");
   await harness.tick(USAGE_POLL_MS * 3);
   assert.equal(requests, 1);
 
-  harness.ctx.model = createModel({ provider: "openai-codex", id: "gpt-5.4" });
+  harness.ctx.model = createModel({ provider: "openai", id: "gpt-5.4" });
   harness.emit("model_select");
   await harness.tick();
   assert.equal(requests, 2);
@@ -297,7 +297,7 @@ test("usage command times out while credentials are unresolved", async (t) => {
   const component = harness.createFooter();
 
   const auth = deferred<AuthResult>();
-  harness.ctx.modelRegistry.getApiKeyAndHeaders = () => auth.promise;
+  harness.ctx.modelRegistry.getProviderAuth = () => auth.promise;
   let completed = false;
   const command = harness.command().handler("", harness.ctx)
     .then(() => { completed = true; });
@@ -305,7 +305,7 @@ test("usage command times out while credentials are unresolved", async (t) => {
   assert.equal(completed, true);
   assert.match(required(component.render(200)[0]), /5h 10%/);
 
-  auth.resolve({ ok: true, apiKey: "opaque-token" });
+  auth.resolve({ auth: { apiKey: "opaque-token" } });
   await command;
   await flushAsyncWork();
   assert.equal(requests, 1);
@@ -360,12 +360,12 @@ test("ignores an obsolete usage response after a provider switch", async (t) => 
   await flushAsyncWork();
   const component = harness.createFooter();
 
-  harness.ctx.model = createModel({ provider: "openai", id: "gpt-5.4" });
+  harness.ctx.model = createModel({ provider: "openai-codex", id: "gpt-5.4" });
   harness.emit("model_select");
   assert.equal(required(requestSignal).aborted, true);
 
   harness.ctx.model = createModel({
-    provider: "openai-codex",
+    provider: "openai",
     id: "gpt-5.4",
     reasoning: true,
   });
@@ -442,4 +442,25 @@ test("ignores a usage response that arrives after its timeout", async (t) => {
 
   harness.emit("session_shutdown");
   required(component.dispose)();
+});
+
+
+test("switching openai from OAuth to an API key clears quotas and stops polling", async (t) => {
+  const { timers, clearedTimers } = useFakeTimers(t);
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => usageResponse(++requests));
+  const harness = createHarness();
+  harness.start();
+  await flushAsyncWork();
+  const component = harness.createFooter();
+  assert.match(required(component.render(200)[0]), /5h/);
+  harness.emit("agent_start");
+  const poll = required(timers.find(timer => timer.delay === USAGE_POLL_MS));
+  harness.ctx.modelRegistry.isUsingOAuth = () => false;
+  harness.emit("model_select");
+  assert.doesNotMatch(required(component.render(200)[0]), /5h/);
+  assert.ok(clearedTimers.includes(poll));
+  await harness.command().handler("", harness.ctx);
+  assert.equal(requests, 1);
+  harness.emit("session_shutdown");
 });

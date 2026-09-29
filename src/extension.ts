@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { isCodexProvider } from "./auth.ts";
+import { isChatGPTLogin } from "./auth.ts";
 import { USAGE_POLL_MS, USAGE_TIMEOUT_MS } from "./constants.ts";
 import { installFooter } from "./footer.ts";
 import type { StatuslineState } from "./types.ts";
@@ -51,7 +51,7 @@ export default function codexStatusline(pi: ExtensionAPI): void {
 
   function updateContext(ctx: ExtensionContext): void {
     state.context = ctx;
-    const provider = isCodexProvider(ctx.model?.provider)
+    const provider = isChatGPTLogin(ctx)
       ? ctx.model?.provider
       : undefined;
 

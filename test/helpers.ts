@@ -29,7 +29,7 @@ export function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-export type AuthResult = Awaited<ReturnType<ExtensionContext["modelRegistry"]["getApiKeyAndHeaders"]>>;
+export type AuthResult = Awaited<ReturnType<ExtensionContext["modelRegistry"]["getProviderAuth"]>>;
 export type FooterFactory = NonNullable<Parameters<ExtensionContext["ui"]["setFooter"]>[0]>;
 export type FooterComponent = ReturnType<FooterFactory>;
 
@@ -37,8 +37,8 @@ export function createModel(overrides: Partial<NonNullable<ExtensionContext["mod
   return {
     id: "gpt-5.4",
     name: "GPT-5.4",
-    provider: "openai-codex",
-    api: "openai-codex-responses",
+    provider: "openai",
+    api: "openai-responses",
     baseUrl: "https://example.test",
     reasoning: true,
     input: ["text"],
@@ -60,16 +60,17 @@ export function createContext(overrides: Partial<ExtensionCommandContext> = {}):
     thinkingLevel: "high",
     getContextUsage: () => contextUsage(20),
     modelRegistry: mockHost<ExtensionContext["modelRegistry"]>({
-      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "opaque-token" }),
+      isUsingOAuth: () => true,
+      getProviderAuth: async () => ({ auth: { apiKey: "opaque-token" } }),
     }),
     ui: mockHost<ExtensionContext["ui"]>({}),
     ...overrides,
   });
 }
 
-export function authContext(resolveAuth: ExtensionContext["modelRegistry"]["getApiKeyAndHeaders"]) {
+export function authContext(resolveAuth: ExtensionContext["modelRegistry"]["getProviderAuth"]) {
   return createContext({
-    modelRegistry: mockHost<ExtensionContext["modelRegistry"]>({ getApiKeyAndHeaders: resolveAuth }),
+    modelRegistry: mockHost<ExtensionContext["modelRegistry"]>({ isUsingOAuth: () => true, getProviderAuth: resolveAuth }),
   });
 }
 

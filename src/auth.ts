@@ -1,7 +1,8 @@
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { OPENAI_AUTH_CLAIM } from "./constants.ts";
 
-export function isCodexProvider(provider: string | undefined): boolean {
-  return /^openai-codex(?:-\d+)?$/.test(provider || "");
+export function isChatGPTLogin(ctx: Pick<ExtensionContext, "model" | "modelRegistry">): boolean {
+  return ctx.model?.provider === "openai" && ctx.modelRegistry.isUsingOAuth(ctx.model);
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> {

@@ -1,17 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getAccountId, isCodexProvider } from "../src/auth.ts";
+import { getAccountId, isChatGPTLogin } from "../src/auth.ts";
+
+import { createContext, createModel } from "./helpers.ts";
 
 function encode(value: unknown) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
-test("recognizes Codex providers, including numbered accounts", () => {
-  assert.equal(isCodexProvider("openai-codex"), true);
-  assert.equal(isCodexProvider("openai-codex-2"), true);
-  assert.equal(isCodexProvider("openai"), false);
-  assert.equal(isCodexProvider(undefined), false);
+test("only enables quotas for the openai OAuth login", () => {
+  const ctx = createContext();
+  assert.equal(isChatGPTLogin(ctx), true);
+  ctx.modelRegistry.isUsingOAuth = () => false;
+  assert.equal(isChatGPTLogin(ctx), false);
+  ctx.modelRegistry.isUsingOAuth = () => true;
+  for (const provider of ["openai-codex", "openai-codex-2", "openai-2", "anthropic"]) {
+    ctx.model = createModel({ provider });
+    assert.equal(isChatGPTLogin(ctx), false);
+  }
+  ctx.model = undefined;
+  assert.equal(isChatGPTLogin(ctx), false);
 });
 
 test("reads the account id from a ChatGPT OAuth token", () => {

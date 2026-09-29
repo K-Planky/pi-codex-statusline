@@ -5,7 +5,7 @@ import { authContext, deferred } from "./helpers.ts";
 
 import { fetchCodexUsage } from "../src/usage.ts";
 
-const ctx = authContext(async () => ({ ok: true, apiKey: "test-token" }));
+const ctx = authContext(async () => ({ auth: { apiKey: "test-token" } }));
 
 async function serve(t: TestContext, handler: RequestListener) {
   const server = createServer(handler);

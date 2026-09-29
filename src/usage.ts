@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { getAccountId, isCodexProvider } from "./auth.ts";
+import { getAccountId, isChatGPTLogin } from "./auth.ts";
 import type { UsageSnapshot, UsageWindow } from "./types.ts";
 import {
   FIVE_HOUR_SECONDS,
@@ -90,28 +90,26 @@ export async function fetchCodexUsage(
 ): Promise<UsageSnapshot> {
   signal?.throwIfAborted();
   const model = ctx.model;
-  if (!model || !isCodexProvider(model.provider)) {
-    throw new Error("The active model is not using the openai-codex provider.");
+  if (!model || !isChatGPTLogin(ctx)) {
+    throw new Error("The active model is not using the openai ChatGPT login.");
   }
 
+  // Resolve the quota credential independently; never send the new login token here.
   const auth = await waitForAuth(
-    ctx.modelRegistry.getApiKeyAndHeaders(model),
+    ctx.modelRegistry.getProviderAuth("openai-codex"),
     signal,
   );
   signal?.throwIfAborted();
-  if (!auth.ok || !auth.apiKey) {
-    throw new Error(
-      auth.ok
-        ? "No ChatGPT OAuth token is available."
-        : auth.error || "Could not resolve ChatGPT authentication.",
-    );
+  const token = auth?.auth.apiKey;
+  if (!token) {
+    throw new Error("No legacy ChatGPT OAuth token is available for quota polling.");
   }
 
   const headers = new Headers();
-  headers.set("authorization", `Bearer ${auth.apiKey}`);
+  headers.set("authorization", `Bearer ${token}`);
   headers.set("accept", "application/json");
   headers.set("user-agent", "pi-codex-statusline");
-  const accountId = getAccountId(auth.apiKey);
+  const accountId = getAccountId(token);
   if (accountId) headers.set("chatgpt-account-id", accountId);
 
   const response = await fetchImpl(endpoint, {
